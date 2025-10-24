@@ -5,6 +5,7 @@ Similar to CleanMyMac with features for system cleanup and optimization
 """
 
 import os
+import pwd
 import shutil
 import subprocess
 import sys
@@ -16,7 +17,15 @@ class CleanMyMac:
     """Main class for Mac cleaning and maintenance operations"""
     
     def __init__(self):
-        self.home = str(Path.home())
+        # Prefer the invoking user's home when running under sudo
+        sudo_user = os.environ.get("SUDO_USER")
+        if sudo_user and os.geteuid() == 0:
+            try:
+                self.home = pwd.getpwnam(sudo_user).pw_dir
+            except KeyError:
+                self.home = str(Path.home())
+        else:
+            self.home = str(Path.home())
         self.cleaned_size = 0
         
     def get_dir_size(self, path):
@@ -97,7 +106,44 @@ class CleanMyMac:
                 print(f"[✓] Trash emptied: {self.format_size(size_before)}")
                 return size_before
             except PermissionError:
-                print("[!] Permission denied accessing trash")
+                # Fallback 1: ask Finder (via AppleScript) to empty the trash to bypass TCC restrictions
+                try:
+                    result = subprocess.run(
+                        [
+                            "osascript",
+                            "-e",
+                            'tell application "Finder" to empty trash',
+                        ],
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                    )
+                    self.cleaned_size += size_before
+                    print(f"[✓] Trash emptied via Finder")
+                    return size_before
+                except (subprocess.CalledProcessError, FileNotFoundError):
+                    # Fallback 2: when running under sudo, try as the invoking user
+                    sudo_user = os.environ.get("SUDO_USER") if os.geteuid() == 0 else None
+                    if sudo_user:
+                        try:
+                            subprocess.run(
+                                [
+                                    "sudo",
+                                    "-u",
+                                    sudo_user,
+                                    "bash",
+                                    "-lc",
+                                    'find ~/.Trash -mindepth 1 -maxdepth 1 -exec rm -rf {} +',
+                                ],
+                                check=True,
+                            )
+                            self.cleaned_size += size_before
+                            print(f"[✓] Trash emptied via user context: {self.format_size(size_before)}")
+                            return size_before
+                        except subprocess.CalledProcessError:
+                            print(f"[!] Permission denied accessing trash at: {trash_path}")
+                    else:
+                        print(f"[!] Permission denied accessing trash at: {trash_path}")
         else:
             print("[✓] Trash is already empty")
         return 0
