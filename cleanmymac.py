@@ -147,6 +147,75 @@ class CleanMyMac:
         else:
             print("[✓] Trash is already empty")
         return 0
+
+    def clean_per_volume_trash(self):
+        """Empty per-volume trashes under /Volumes for the target user"""
+        print("\n[*] Emptying per-volume trashes under /Volumes...")
+        volumes_root = "/Volumes"
+        if not os.path.isdir(volumes_root):
+            print("[!] /Volumes not found")
+            return 0
+        # Determine target UID (respect SUDO_USER when running as root)
+        try:
+            if os.geteuid() == 0 and os.environ.get("SUDO_USER"):
+                uid = pwd.getpwnam(os.environ["SUDO_USER"]).pw_uid
+            else:
+                uid = os.getuid()
+        except KeyError:
+            uid = os.getuid()
+
+        total_cleaned = 0
+        had_perm_issue = False
+
+        for vol_name in os.listdir(volumes_root):
+            vol_path = os.path.join(volumes_root, vol_name)
+            if not os.path.isdir(vol_path):
+                continue
+            candidates = [
+                os.path.join(vol_path, ".Trashes", str(uid)),
+                os.path.join(vol_path, ".Trash"),
+            ]
+            for candidate in candidates:
+                if not os.path.exists(candidate):
+                    continue
+                size_before = self.get_dir_size(candidate)
+                try:
+                    for item in os.listdir(candidate):
+                        item_path = os.path.join(candidate, item)
+                        try:
+                            if os.path.isfile(item_path) or os.path.islink(item_path):
+                                os.remove(item_path)
+                            else:
+                                shutil.rmtree(item_path)
+                        except (PermissionError, OSError):
+                            had_perm_issue = True
+                            continue
+                    size_after = self.get_dir_size(candidate)
+                    cleaned = max(0, size_before - size_after)
+                    total_cleaned += cleaned
+                    print(f"  Cleaned: {self.format_size(cleaned)} from {candidate}")
+                except PermissionError:
+                    had_perm_issue = True
+                    print(f"  Permission denied: {candidate}")
+
+        if had_perm_issue:
+            # Try Finder fallback to empty all trashes if TCC blocked us
+            try:
+                subprocess.run(
+                    [
+                        "osascript",
+                        "-e",
+                        'tell application "Finder" to empty trash',
+                    ],
+                    check=True,
+                )
+                print("[✓] Per-volume trash emptied via Finder fallback")
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                print("[!] Some per-volume trashes could not be emptied due to permissions")
+
+        self.cleaned_size += total_cleaned
+        print(f"[✓] Total per-volume trash cleaned: {self.format_size(total_cleaned)}")
+        return total_cleaned
     
     def find_large_files(self, directory=None, min_size_mb=100):
         """Find files larger than specified size"""
@@ -316,6 +385,7 @@ def print_menu():
     print("7.  Flush DNS cache")
     print("8.  Show disk usage")
     print("9.  Run all cleaners")
+    print("10. Empty per-volume trashes (/Volumes/*)")
     print("0.  Exit")
     print("\n" + "="*50)
 
@@ -326,6 +396,12 @@ def main():
     
     print("\n⚠️  WARNING: This tool will delete files. Use at your own risk!")
     print("    Always backup important data before cleaning.\n")
+    # Startup note about sudo and Full Disk Access
+    if os.geteuid() == 0:
+        sudo_user = os.environ.get("SUDO_USER")
+        target_user = sudo_user or "root"
+        print(f"Note: Running under sudo; targeting {target_user}'s home for user-level actions.")
+    print("Tip: For Trash/caches, grant Terminal Full Disk Access (Settings → Privacy & Security).\n")
     
     while True:
         print_menu()
@@ -366,6 +442,9 @@ def main():
             cleaner.clean_logs()
             cleaner.get_disk_usage()
             print(f"\n[✓] Total space cleaned: {cleaner.format_size(cleaner.cleaned_size)}")
+        
+        elif choice == '10':
+            cleaner.clean_per_volume_trash()
         
         elif choice == '0':
             print("\n[✓] Exiting CleanMyMac Python. Stay clean!\n")

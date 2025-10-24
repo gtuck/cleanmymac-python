@@ -61,6 +61,7 @@ python3 cleanmymac.py
 7. **Flush DNS cache** - Clears the DNS cache
 8. **Show disk usage** - Displays current disk space usage
 9. **Run all cleaners** - Executes cache cleaning, trash emptying, and log cleaning together
+10. **Empty per-volume trashes** - Empties `.Trashes/<uid>` or `.Trash` on mounted volumes under `/Volumes/*`
 0. **Exit** - Quit the application
 
 ## Safety Features
@@ -75,11 +76,18 @@ python3 cleanmymac.py
 
 This tool **DELETES FILES**. Always backup important data before running cleanup operations. Use at your own risk.
 
-## Permissions
+## Permissions & Full Disk Access
 
-Some operations may require elevated privileges:
-- Flushing DNS cache requires `sudo` access
-- Cleaning system-level caches may require admin permissions
+macOS privacy (TCC) can block Terminal from accessing some folders (Trash, external volumes). If you see "Permission denied" or "Operation not permitted":
+
+- Grant your terminal app Full Disk Access:
+  - System Settings → Privacy & Security → Full Disk Access → add Terminal/iTerm and enable it.
+- The tool now uses the invoking user's home when run with sudo (via `SUDO_USER`), so Trash and user-level actions still target your account.
+- When Trash access is blocked, the tool also tries an AppleScript fallback: `osascript -e 'tell application "Finder" to empty trash'`.
+
+Notes:
+- Flushing DNS cache requires `sudo`.
+- For user-level tasks (Trash, caches, logs), prefer running without `sudo`.
 
 ## Example Output
 
