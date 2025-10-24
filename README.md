@@ -50,6 +50,33 @@ Simply run the script and follow the interactive menu:
 python3 cleanmymac.py
 ```
 
+Or install/run as a console script (via `pyproject.toml`):
+
+```
+cleanmymac
+```
+
+### Non-interactive CLI
+
+All actions are available as flags suitable for automation:
+
+```
+cleanmymac --clean-caches --clean-trash --clean-logs --yes
+cleanmymac --all --yes
+cleanmymac --find-large --min-size 500 --paths ~/Downloads ~/Documents --limit 50
+cleanmymac --find-old --days 365
+cleanmymac --disk-usage
+cleanmymac --free-ram
+sudo cleanmymac --flush-dns
+```
+
+Useful flags:
+- `--dry-run` show what would be deleted, without deleting
+- `--yes` non-interactive confirmation for delete operations
+- `--log FILE` append a logfile of actions
+- `--paths` target directories for finders (defaults to `$HOME`)
+- `--limit` cap number of results for `--find-large` (default 20)
+
 ### Menu Options
 
 1. **Clean system caches** - Removes cached files from ~/Library/Caches
@@ -84,6 +111,7 @@ macOS privacy (TCC) can block Terminal from accessing some folders (Trash, exter
   - System Settings → Privacy & Security → Full Disk Access → add Terminal/iTerm and enable it.
 - The tool now uses the invoking user's home when run with sudo (via `SUDO_USER`), so Trash and user-level actions still target your account.
 - When Trash access is blocked, the tool also tries an AppleScript fallback: `osascript -e 'tell application "Finder" to empty trash'`.
+ - DNS flushing is attempted only when already running as root; otherwise an informative message is shown.
 
 Notes:
 - Flushing DNS cache requires `sudo`.

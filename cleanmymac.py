@@ -1,374 +1,15 @@
 #!/usr/bin/env python3
 """
-CleanMyMac Python - A Mac cleaning and maintenance utility
-Similar to CleanMyMac with features for system cleanup and optimization
+CleanMyMac Python - Mac cleaning and maintenance utility (CLI)
 """
 
+import argparse
 import os
-import pwd
-import shutil
-import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
-from datetime import datetime, timedelta
 
-
-class CleanMyMac:
-    """Main class for Mac cleaning and maintenance operations"""
-    
-    def __init__(self):
-        # Prefer the invoking user's home when running under sudo
-        sudo_user = os.environ.get("SUDO_USER")
-        if sudo_user and os.geteuid() == 0:
-            try:
-                self.home = pwd.getpwnam(sudo_user).pw_dir
-            except KeyError:
-                self.home = str(Path.home())
-        else:
-            self.home = str(Path.home())
-        self.cleaned_size = 0
-        
-    def get_dir_size(self, path):
-        """Calculate directory size in bytes"""
-        total_size = 0
-        try:
-            for dirpath, dirnames, filenames in os.walk(path):
-                for filename in filenames:
-                    filepath = os.path.join(dirpath, filename)
-                    try:
-                        total_size += os.path.getsize(filepath)
-                    except (OSError, FileNotFoundError):
-                        continue
-        except (PermissionError, FileNotFoundError):
-            pass
-        return total_size
-    
-    def format_size(self, bytes_size):
-        """Format bytes to human readable size"""
-        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
-            if bytes_size < 1024.0:
-                return f"{bytes_size:.2f} {unit}"
-            bytes_size /= 1024.0
-        return f"{bytes_size:.2f} PB"
-    
-    def clean_system_caches(self):
-        """Clean system and user cache files"""
-        print("\n[*] Cleaning system caches...")
-        cache_dirs = [
-            f"{self.home}/Library/Caches",
-        ]
-        
-        total_cleaned = 0
-        for cache_dir in cache_dirs:
-            if os.path.exists(cache_dir):
-                size_before = self.get_dir_size(cache_dir)
-                try:
-                    for item in os.listdir(cache_dir):
-                        item_path = os.path.join(cache_dir, item)
-                        try:
-                            if os.path.isfile(item_path):
-                                os.remove(item_path)
-                            elif os.path.isdir(item_path):
-                                shutil.rmtree(item_path)
-                        except (PermissionError, OSError) as e:
-                            continue
-                    
-                    size_after = self.get_dir_size(cache_dir)
-                    cleaned = size_before - size_after
-                    total_cleaned += cleaned
-                    print(f"  Cleaned: {self.format_size(cleaned)} from {cache_dir}")
-                except PermissionError:
-                    print(f"  Permission denied: {cache_dir}")
-        
-        self.cleaned_size += total_cleaned
-        print(f"[✓] Total cache cleaned: {self.format_size(total_cleaned)}")
-        return total_cleaned
-    
-    def clean_trash(self):
-        """Empty trash bin"""
-        print("\n[*] Emptying trash...")
-        trash_path = f"{self.home}/.Trash"
-        
-        if os.path.exists(trash_path):
-            size_before = self.get_dir_size(trash_path)
-            try:
-                for item in os.listdir(trash_path):
-                    item_path = os.path.join(trash_path, item)
-                    try:
-                        if os.path.isfile(item_path):
-                            os.remove(item_path)
-                        else:
-                            shutil.rmtree(item_path)
-                    except (PermissionError, OSError):
-                        continue
-                
-                self.cleaned_size += size_before
-                print(f"[✓] Trash emptied: {self.format_size(size_before)}")
-                return size_before
-            except PermissionError:
-                # Fallback 1: ask Finder (via AppleScript) to empty the trash to bypass TCC restrictions
-                try:
-                    result = subprocess.run(
-                        [
-                            "osascript",
-                            "-e",
-                            'tell application "Finder" to empty trash',
-                        ],
-                        capture_output=True,
-                        text=True,
-                        check=True,
-                    )
-                    self.cleaned_size += size_before
-                    print(f"[✓] Trash emptied via Finder")
-                    return size_before
-                except (subprocess.CalledProcessError, FileNotFoundError):
-                    # Fallback 2: when running under sudo, try as the invoking user
-                    sudo_user = os.environ.get("SUDO_USER") if os.geteuid() == 0 else None
-                    if sudo_user:
-                        try:
-                            subprocess.run(
-                                [
-                                    "sudo",
-                                    "-u",
-                                    sudo_user,
-                                    "bash",
-                                    "-lc",
-                                    'find ~/.Trash -mindepth 1 -maxdepth 1 -exec rm -rf {} +',
-                                ],
-                                check=True,
-                            )
-                            self.cleaned_size += size_before
-                            print(f"[✓] Trash emptied via user context: {self.format_size(size_before)}")
-                            return size_before
-                        except subprocess.CalledProcessError:
-                            print(f"[!] Permission denied accessing trash at: {trash_path}")
-                    else:
-                        print(f"[!] Permission denied accessing trash at: {trash_path}")
-        else:
-            print("[✓] Trash is already empty")
-        return 0
-
-    def clean_per_volume_trash(self):
-        """Empty per-volume trashes under /Volumes for the target user"""
-        print("\n[*] Emptying per-volume trashes under /Volumes...")
-        volumes_root = "/Volumes"
-        if not os.path.isdir(volumes_root):
-            print("[!] /Volumes not found")
-            return 0
-        # Determine target UID (respect SUDO_USER when running as root)
-        try:
-            if os.geteuid() == 0 and os.environ.get("SUDO_USER"):
-                uid = pwd.getpwnam(os.environ["SUDO_USER"]).pw_uid
-            else:
-                uid = os.getuid()
-        except KeyError:
-            uid = os.getuid()
-
-        total_cleaned = 0
-        had_perm_issue = False
-
-        for vol_name in os.listdir(volumes_root):
-            vol_path = os.path.join(volumes_root, vol_name)
-            if not os.path.isdir(vol_path):
-                continue
-            candidates = [
-                os.path.join(vol_path, ".Trashes", str(uid)),
-                os.path.join(vol_path, ".Trash"),
-            ]
-            for candidate in candidates:
-                if not os.path.exists(candidate):
-                    continue
-                size_before = self.get_dir_size(candidate)
-                try:
-                    for item in os.listdir(candidate):
-                        item_path = os.path.join(candidate, item)
-                        try:
-                            if os.path.isfile(item_path) or os.path.islink(item_path):
-                                os.remove(item_path)
-                            else:
-                                shutil.rmtree(item_path)
-                        except (PermissionError, OSError):
-                            had_perm_issue = True
-                            continue
-                    size_after = self.get_dir_size(candidate)
-                    cleaned = max(0, size_before - size_after)
-                    total_cleaned += cleaned
-                    print(f"  Cleaned: {self.format_size(cleaned)} from {candidate}")
-                except PermissionError:
-                    had_perm_issue = True
-                    print(f"  Permission denied: {candidate}")
-
-        if had_perm_issue:
-            # Try Finder fallback to empty all trashes if TCC blocked us
-            try:
-                subprocess.run(
-                    [
-                        "osascript",
-                        "-e",
-                        'tell application "Finder" to empty trash',
-                    ],
-                    check=True,
-                )
-                print("[✓] Per-volume trash emptied via Finder fallback")
-            except (subprocess.CalledProcessError, FileNotFoundError):
-                print("[!] Some per-volume trashes could not be emptied due to permissions")
-
-        self.cleaned_size += total_cleaned
-        print(f"[✓] Total per-volume trash cleaned: {self.format_size(total_cleaned)}")
-        return total_cleaned
-    
-    def find_large_files(self, directory=None, min_size_mb=100):
-        """Find files larger than specified size"""
-        if directory is None:
-            directory = self.home
-        
-        print(f"\n[*] Searching for files larger than {min_size_mb}MB in {directory}...")
-        print("    This may take a while...\n")
-        
-        large_files = []
-        min_size_bytes = min_size_mb * 1024 * 1024
-        
-        try:
-            for root, dirs, files in os.walk(directory):
-                # Skip system directories
-                dirs[:] = [d for d in dirs if d not in ['Library', 'System', '.Trash']]
-                
-                for file in files:
-                    try:
-                        filepath = os.path.join(root, file)
-                        size = os.path.getsize(filepath)
-                        if size > min_size_bytes:
-                            large_files.append((filepath, size))
-                    except (OSError, FileNotFoundError, PermissionError):
-                        continue
-        except (PermissionError, FileNotFoundError):
-            pass
-        
-        # Sort by size descending
-        large_files.sort(key=lambda x: x[1], reverse=True)
-        
-        if large_files:
-            print(f"Found {len(large_files)} large files:\n")
-            for i, (filepath, size) in enumerate(large_files[:20], 1):  # Show top 20
-                print(f"  {i}. {filepath}")
-                print(f"     Size: {self.format_size(size)}\n")
-        else:
-            print(f"[✓] No files larger than {min_size_mb}MB found")
-        
-        return large_files
-    
-    def find_old_files(self, directory=None, days_old=180):
-        """Find files older than specified days"""
-        if directory is None:
-            directory = self.home
-        
-        print(f"\n[*] Searching for files older than {days_old} days...")
-        
-        cutoff_date = datetime.now() - timedelta(days=days_old)
-        old_files = []
-        
-        try:
-            for root, dirs, files in os.walk(directory):
-                dirs[:] = [d for d in dirs if d not in ['Library', 'System', '.Trash']]
-                
-                for file in files:
-                    try:
-                        filepath = os.path.join(root, file)
-                        mtime = datetime.fromtimestamp(os.path.getmtime(filepath))
-                        if mtime < cutoff_date:
-                            size = os.path.getsize(filepath)
-                            old_files.append((filepath, size, mtime))
-                    except (OSError, FileNotFoundError, PermissionError):
-                        continue
-        except (PermissionError, FileNotFoundError):
-            pass
-        
-        if old_files:
-            total_size = sum(f[1] for f in old_files)
-            print(f"[✓] Found {len(old_files)} old files (Total: {self.format_size(total_size)})")
-        else:
-            print(f"[✓] No files older than {days_old} days found")
-        
-        return old_files
-    
-    def clean_logs(self):
-        """Clean system and application logs"""
-        print("\n[*] Cleaning log files...")
-        log_dirs = [
-            f"{self.home}/Library/Logs",
-        ]
-        
-        total_cleaned = 0
-        for log_dir in log_dirs:
-            if os.path.exists(log_dir):
-                size_before = self.get_dir_size(log_dir)
-                try:
-                    for root, dirs, files in os.walk(log_dir):
-                        for file in files:
-                            if file.endswith('.log') or file.endswith('.txt'):
-                                filepath = os.path.join(root, file)
-                                try:
-                                    size = os.path.getsize(filepath)
-                                    os.remove(filepath)
-                                    total_cleaned += size
-                                except (PermissionError, OSError):
-                                    continue
-                    print(f"  Cleaned: {self.format_size(total_cleaned)} from {log_dir}")
-                except PermissionError:
-                    print(f"  Permission denied: {log_dir}")
-        
-        self.cleaned_size += total_cleaned
-        print(f"[✓] Total logs cleaned: {self.format_size(total_cleaned)}")
-        return total_cleaned
-    
-    def free_memory(self):
-        """Free up RAM (macOS purge command)"""
-        print("\n[*] Freeing up RAM...")
-        try:
-            result = subprocess.run(['purge'], capture_output=True, text=True)
-            if result.returncode == 0:
-                print("[✓] Memory freed successfully")
-                return True
-            else:
-                print("[!] Failed to free memory")
-                return False
-        except FileNotFoundError:
-            print("[!] 'purge' command not found (macOS only)")
-            return False
-        except PermissionError:
-            print("[!] Permission denied. Try running with sudo")
-            return False
-    
-    def flush_dns_cache(self):
-        """Flush DNS cache"""
-        print("\n[*] Flushing DNS cache...")
-        try:
-            subprocess.run(['dscacheutil', '-flushcache'], check=True)
-            subprocess.run(['sudo', 'killall', '-HUP', 'mDNSResponder'], check=True)
-            print("[✓] DNS cache flushed successfully")
-            return True
-        except subprocess.CalledProcessError:
-            print("[!] Failed to flush DNS cache")
-            return False
-        except FileNotFoundError:
-            print("[!] Command not found (macOS only)")
-            return False
-    
-    def get_disk_usage(self):
-        """Get disk usage information"""
-        print("\n[*] Disk Usage:")
-        try:
-            stat = shutil.disk_usage(self.home)
-            total = self.format_size(stat.total)
-            used = self.format_size(stat.used)
-            free = self.format_size(stat.free)
-            percent = (stat.used / stat.total) * 100
-            
-            print(f"  Total: {total}")
-            print(f"  Used: {used} ({percent:.1f}%)")
-            print(f"  Free: {free}")
-        except Exception as e:
-            print(f"[!] Error getting disk usage: {e}")
+from cleanmymac_core import CleanMyMac
 
 
 def print_menu():
@@ -391,69 +32,213 @@ def print_menu():
 
 
 def main():
-    """Main application loop"""
-    cleaner = CleanMyMac()
-    
-    print("\n⚠️  WARNING: This tool will delete files. Use at your own risk!")
-    print("    Always backup important data before cleaning.\n")
-    # Startup note about sudo and Full Disk Access
-    if os.geteuid() == 0:
-        sudo_user = os.environ.get("SUDO_USER")
-        target_user = sudo_user or "root"
-        print(f"Note: Running under sudo; targeting {target_user}'s home for user-level actions.")
-    print("Tip: For Trash/caches, grant Terminal Full Disk Access (Settings → Privacy & Security).\n")
-    
-    while True:
-        print_menu()
-        choice = input("\nSelect an option: ").strip()
-        
-        if choice == '1':
-            cleaner.clean_system_caches()
-        
-        elif choice == '2':
-            cleaner.clean_trash()
-        
-        elif choice == '3':
-            cleaner.clean_logs()
-        
-        elif choice == '4':
-            size_input = input("Enter minimum file size in MB (default 100): ").strip()
-            min_size = int(size_input) if size_input.isdigit() else 100
-            cleaner.find_large_files(min_size_mb=min_size)
-        
-        elif choice == '5':
-            days_input = input("Enter days old (default 180): ").strip()
-            days = int(days_input) if days_input.isdigit() else 180
-            cleaner.find_old_files(days_old=days)
-        
-        elif choice == '6':
-            cleaner.free_memory()
-        
-        elif choice == '7':
-            cleaner.flush_dns_cache()
-        
-        elif choice == '8':
-            cleaner.get_disk_usage()
-        
-        elif choice == '9':
-            print("\n[*] Running all cleaners...")
-            cleaner.clean_system_caches()
-            cleaner.clean_trash()
-            cleaner.clean_logs()
-            cleaner.get_disk_usage()
-            print(f"\n[✓] Total space cleaned: {cleaner.format_size(cleaner.cleaned_size)}")
-        
-        elif choice == '10':
-            cleaner.clean_per_volume_trash()
-        
-        elif choice == '0':
-            print("\n[✓] Exiting CleanMyMac Python. Stay clean!\n")
-            sys.exit(0)
-        
+    """CLI entrypoint: parse args or run interactive menu"""
+    parser = argparse.ArgumentParser(description="CleanMyMac Python")
+    # actions
+    parser.add_argument("--clean-caches", action="store_true", help="Clean ~/Library/Caches")
+    parser.add_argument("--clean-trash", action="store_true", help="Empty ~/.Trash")
+    parser.add_argument("--clean-logs", action="store_true", help="Clean ~/Library/Logs (*.log, *.txt)")
+    parser.add_argument("--per-volume-trash", action="store_true", help="Empty /Volumes/*/.Trashes/<uid> and .Trash")
+    parser.add_argument("--find-large", action="store_true", help="Find large files")
+    parser.add_argument("--min-size", type=int, default=100, help="Minimum size in MB for --find-large (default 100)")
+    parser.add_argument("--find-old", action="store_true", help="Find old files")
+    parser.add_argument("--days", type=int, default=180, help="Age in days for --find-old (default 180)")
+    parser.add_argument("--disk-usage", action="store_true", help="Show disk usage")
+    parser.add_argument("--free-ram", action="store_true", help="Free inactive memory using purge")
+    parser.add_argument("--flush-dns", action="store_true", help="Flush DNS cache (requires sudo)")
+    parser.add_argument("--all", action="store_true", help="Run all cleaners (caches, trash, logs)")
+    # behavior
+    parser.add_argument("--dry-run", action="store_true", help="Do not delete anything; show what would be done")
+    parser.add_argument("--yes", action="store_true", help="Assume yes for non-interactive deletions")
+    parser.add_argument("--log", type=Path, help="Log actions to this file")
+    parser.add_argument("--limit", type=int, default=20, help="Limit count for large-file listing (default 20)")
+    parser.add_argument("--paths", type=Path, nargs="*", help="Optional paths for find operations (default $HOME)")
+
+    args = parser.parse_args()
+
+    # If no action args given, run interactive menu
+    any_action = any([
+        args.clean_caches, args.clean_trash, args.clean_logs, args.per_volume_trash, args.find_large,
+        args.find_old, args.disk_usage, args.free_ram, args.flush_dns, args.all
+    ])
+
+    log_handle = None
+    try:
+        if args.log:
+            log_handle = args.log.open("a", encoding="utf-8")
+    except Exception:
+        log_handle = None
+
+    cleaner = CleanMyMac(dry_run=args.dry_run, logger=log_handle)
+
+    if not any_action:
+        print("\n⚠️  WARNING: This tool will delete files. Use at your own risk!")
+        print("    Always backup important data before cleaning.\n")
+        if os.geteuid() == 0:
+            sudo_user = os.environ.get("SUDO_USER")
+            target_user = sudo_user or "root"
+            print(f"Note: Running under sudo; targeting {target_user}'s home for user-level actions.")
+        print("Tip: For Trash/caches, grant Terminal Full Disk Access (Settings → Privacy & Security).\n")
+
+        while True:
+            print_menu()
+            choice = input("\nSelect an option: ").strip()
+
+            if choice == '1':
+                stats = cleaner.clean_system_caches()
+                print(f"[✓] Total cache cleaned: {cleaner.format_size(stats.bytes_freed)}")
+
+            elif choice == '2':
+                stats = cleaner.clean_trash()
+                print(f"[✓] Trash emptied: {cleaner.format_size(stats.bytes_freed)}")
+
+            elif choice == '3':
+                stats = cleaner.clean_logs()
+                print(f"[✓] Total logs cleaned: {cleaner.format_size(stats.bytes_freed)}")
+
+            elif choice == '4':
+                size_input = input("Enter minimum file size in MB (default 100): ").strip()
+                min_size = int(size_input) if size_input.isdigit() else 100
+                print(f"\n[*] Searching for files larger than {min_size}MB in {cleaner.home}...")
+                files = cleaner.find_large_files(min_size_mb=min_size)
+                if files:
+                    print(f"Found {len(files)} large files:\n")
+                    for i, (p, s) in enumerate(files, 1):
+                        print(f"  {i}. {p}")
+                        print(f"     Size: {cleaner.format_size(s)}\n")
+                else:
+                    print(f"[✓] No files larger than {min_size}MB found")
+
+            elif choice == '5':
+                days_input = input("Enter days old (default 180): ").strip()
+                days = int(days_input) if days_input.isdigit() else 180
+                print(f"\n[*] Searching for files older than {days} days...")
+                files = cleaner.find_old_files(days_old=days)
+                if files:
+                    total = sum(s for _, s, _ in files)
+                    print(f"[✓] Found {len(files)} old files (Total: {cleaner.format_size(total)})")
+                else:
+                    print(f"[✓] No files older than {days} days found")
+
+            elif choice == '6':
+                print("\n[*] Freeing up RAM...")
+                ok = cleaner.free_memory()
+                print("[✓] Memory freed successfully" if ok else "[!] Failed to free memory")
+
+            elif choice == '7':
+                print("\n[*] Flushing DNS cache...")
+                ok = cleaner.flush_dns_cache()
+                if ok:
+                    print("[✓] DNS cache flushed successfully")
+                else:
+                    need_sudo = " (requires sudo)" if os.geteuid() != 0 else ""
+                    print(f"[!] Failed to flush DNS cache{need_sudo}")
+
+            elif choice == '8':
+                total, used, free = cleaner.get_disk_usage()
+                percent = (used / total) * 100 if total else 0
+                print("\n[*] Disk Usage:")
+                print(f"  Total: {cleaner.format_size(total)}")
+                print(f"  Used: {cleaner.format_size(used)} ({percent:.1f}%)")
+                print(f"  Free: {cleaner.format_size(free)}")
+
+            elif choice == '9':
+                print("\n[*] Running all cleaners...")
+                s1 = cleaner.clean_system_caches()
+                s2 = cleaner.clean_trash()
+                s3 = cleaner.clean_logs()
+                total_bytes = s1.bytes_freed + s2.bytes_freed + s3.bytes_freed
+                print(f"\n[✓] Total space cleaned: {cleaner.format_size(total_bytes)}")
+
+            elif choice == '10':
+                stats = cleaner.clean_per_volume_trash()
+                print(f"[✓] Total per-volume trash cleaned: {cleaner.format_size(stats.bytes_freed)}")
+
+            elif choice == '0':
+                print("\n[✓] Exiting CleanMyMac Python. Stay clean!\n")
+                sys.exit(0)
+
+            else:
+                print("\n[!] Invalid option. Please try again.")
+
+            input("\nPress Enter to continue...")
+        # end interactive loop
+
+    # Non-interactive path
+    def confirm_or_exit():
+        if args.yes:
+            return
+        print("This action will delete files. Re-run with --yes to proceed or use --dry-run.")
+        sys.exit(2)
+
+    exit_code = 0
+    if args.all or args.clean_caches or args.clean_logs or args.clean_trash or args.per_volume_trash:
+        confirm_or_exit()
+
+    if args.all or args.clean_caches:
+        stats = cleaner.clean_system_caches()
+        print(f"[✓] Cache cleaned: {cleaner.format_size(stats.bytes_freed)}")
+
+    if args.all or args.clean_trash:
+        stats = cleaner.clean_trash()
+        print(f"[✓] Trash cleaned: {cleaner.format_size(stats.bytes_freed)}")
+
+    if args.all or args.clean_logs:
+        stats = cleaner.clean_logs()
+        print(f"[✓] Logs cleaned: {cleaner.format_size(stats.bytes_freed)}")
+
+    if args.per_volume_trash:
+        stats = cleaner.clean_per_volume_trash()
+        print(f"[✓] Per-volume trash cleaned: {cleaner.format_size(stats.bytes_freed)}")
+
+    if args.find_large:
+        roots = args.paths or [cleaner.home]
+        for root in roots:
+            print(f"\n[*] Searching for files larger than {args.min_size}MB in {root}...")
+            files = cleaner.find_large_files(directory=Path(root), min_size_mb=args.min_size, limit=args.limit)
+            if files:
+                print(f"Found {len(files)} large files:\n")
+                for i, (p, s) in enumerate(files, 1):
+                    print(f"  {i}. {p}")
+                    print(f"     Size: {cleaner.format_size(s)}\n")
+            else:
+                print(f"[✓] No files larger than {args.min_size}MB found in {root}")
+
+    if args.find_old:
+        roots = args.paths or [cleaner.home]
+        for root in roots:
+            print(f"\n[*] Searching for files older than {args.days} days in {root}...")
+            files = cleaner.find_old_files(directory=Path(root), days_old=args.days)
+            if files:
+                total = sum(s for _, s, _ in files)
+                print(f"[✓] Found {len(files)} old files (Total: {cleaner.format_size(total)})")
+            else:
+                print(f"[✓] No files older than {args.days} days found in {root}")
+
+    if args.disk_usage:
+        total, used, free = cleaner.get_disk_usage()
+        percent = (used / total) * 100 if total else 0
+        print("\n[*] Disk Usage:")
+        print(f"  Total: {cleaner.format_size(total)}")
+        print(f"  Used: {cleaner.format_size(used)} ({percent:.1f}%)")
+        print(f"  Free: {cleaner.format_size(free)}")
+
+    if args.free_ram:
+        ok = cleaner.free_memory()
+        print("[✓] Memory freed successfully" if ok else "[!] Failed to free memory")
+        if not ok:
+            exit_code = max(exit_code, 1)
+
+    if args.flush_dns:
+        ok = cleaner.flush_dns_cache()
+        if ok:
+            print("[✓] DNS cache flushed successfully")
         else:
-            print("\n[!] Invalid option. Please try again.")
-        
-        input("\nPress Enter to continue...")
+            need_sudo = " (requires sudo)" if os.geteuid() != 0 else ""
+            print(f"[!] Failed to flush DNS cache{need_sudo}")
+            exit_code = max(exit_code, 1)
+
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":
